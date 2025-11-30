@@ -1,52 +1,64 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from textblob import TextBlob
+from thefuzz import fuzz
 import re
 
 app = Flask(__name__)
 CORS(app) 
 
+# --- 1. CONCEPT DATABASE (Keywords) ---
 THREAT_INDICATORS = {
     "high_fear": {
         "keywords": ["virus", "infected", "hacked", "breach", "compromised", "suspended", "locked", "banned", "deactivated", "warrant", "arrest", "legal action", "police", "fbi", "irs", "lawsuit", "trojan", "malware", "spyware"],
-        "score": 30,
-        "label": "Fear Mongering"
+        "score": 30, "label": "Fear Mongering"
     },
     "high_greed": {
         "keywords": ["lottery", "winner", "inheritance", "million", "compensation", "fund", "congratulations", "selected", "prize", "investment", "profit", "return", "giveaway", "airdrop", "claim"],
-        "score": 25,
-        "label": "Too Good To Be True"
+        "score": 25, "label": "Too Good To Be True"
     },
     "financial_demand": {
         "keywords": ["gift card", "steam card", "itunes card", "crypto", "bitcoin", "usdt", "ethereum", "wire transfer", "cash app", "deposit", "fee", "payment", "bank transfer", "western union", "moneygram", "routing number", "account number"],
-        "score": 40,  
-        "label": "Financial Coercion"
+        "score": 40, "label": "Financial Coercion"
+    },
+    "sensitive_data": {
+        "keywords": ["bank details", "credit card", "debit card", "password", "pin number", "cvv", "ssn", "social security", "credential", "login info", "card number", "mother's maiden name", "passport"],
+        "score": 50, "label": "Data Theft / PII Request"
     },
     "urgency": {
-        "keywords": ["immediately", "urgent", "24 hours", "48 hours", "today", "now", "expires", "deadline", "act now", "hurry", "asap", "final notice", "warning"],
-        "score": 20,
-        "label": "Artificial Urgency"
+        "keywords": ["immediately", "urgent", "24 hours", "48 hours", "today", "now", "expires", "deadline", "act now", "hurry", "asap", "final notice", "warning", "at once"],
+        "score": 20, "label": "Artificial Urgency"
     },
     "impersonation": {
-        "keywords": ["microsoft support", "windows support", "apple support", "amazon support", "paypal support", "geek squad", "technical department", "fraud department", "security team", "manager", "ceo", "government", "official"],
-        "score": 25,
-        "label": "Authority Impersonation"
+        "keywords": ["microsoft support", "windows support", "apple support", "amazon support", "paypal support", "geek squad", "technical department", "fraud department", "security team", "manager", "ceo", "government", "official", "agent"],
+        "score": 25, "label": "Authority Impersonation"
     },
     "call_to_action": {
-        "keywords": ["call us", "call this number", "contact support", "click the link", "click here", "verify your identity", "log in", "update account", "fill this form", "reply", "kindly"],
-        "score": 15,
-        "label": "Suspicious Call-to-Action"
-    },
-    "remote_access": {
-        "keywords": ["anydesk", "teamviewer", "ultraviewer", "zoho", "connectwise", "support client", "run", "execute"],
-        "score": 50, 
-        "label": "Remote Access Tool (RAT) Request"
+        "keywords": ["call us", "call this number", "contact support", "click the link", "click here", "verify your identity", "log in", "update account", "fill this form", "reply", "kindly", "via this link", "open the link", "visit the link", "download"],
+        "score": 15, "label": "Suspicious Call-to-Action"
     }
 }
 
+# --- 2. PHRASE DATABASE (Semantic Meaning) ---
+# We check if the input sentence "means" the same thing as these known scam phrases,
+# even if the words are re-ordered.
+KNOWN_SCAM_PHRASES = [
+    "kindly deposit the money",
+    "share your bank details",
+    "click the link below to verify",
+    "send me the code",
+    "i need your help urgently",
+    "you have won a prize",
+    "your account has been locked",
+    "verify your wallet",
+    "send it via this link",
+    "fill out the form below",
+    "contact me immediately"
+]
+
 @app.route('/')
 def home():
-    return "Sentinal Brain is Active & Bulletproof 🟢"
+    return "Sentinal Brain is Active & Context-Aware 🟢"
 
 @app.route('/analyze', methods=['POST'])
 def analyze_intent():
@@ -58,66 +70,89 @@ def analyze_intent():
     
     score = 0
     detected_tactics = []
-    
+    found_categories = [] # Track what types of threats we found
+
+    # --- PHASE 1: REGEX PATTERNS ---
     phone_pattern = re.compile(r'(\+\d{1,2}\s)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}')
     if phone_pattern.search(text):
         score += 20
-        detected_tactics.append({
-            "tactic": "Unsolicited Contact Info",
-            "description": "Contains a phone number. Legitimate companies rarely ask you to call a random number in a text.",
-            "icon": "bi-telephone-x-fill"
-        })
+        detected_tactics.append({"tactic": "Unsolicited Contact Info", "description": "Contains a phone number.", "icon": "bi-telephone-x-fill"})
+        found_categories.append("phone")
 
     link_pattern = re.compile(r'(http|https|www\.|bit\.ly|tinyurl)')
     if link_pattern.search(text):
         score += 20
-        detected_tactics.append({
-            "tactic": "Suspicious Link",
-            "description": "Contains a direct link. Scammers use these to steal passwords.",
-            "icon": "bi-link-45deg"
-        })
+        detected_tactics.append({"tactic": "Suspicious Link", "description": "Contains a direct link.", "icon": "bi-link-45deg"})
+        found_categories.append("link")
 
+    # --- PHASE 2: FUZZY KEYWORD MATCHING ---
+    FUZZY_THRESHOLD = 85
     for category, details in THREAT_INDICATORS.items():
-        found_words = [word for word in details['keywords'] if word in text]
+        matches = []
+        for keyword in details['keywords']:
+            if fuzz.partial_ratio(keyword, text) >= FUZZY_THRESHOLD:
+                matches.append(keyword)
         
-        if found_words:
+        if matches:
             score += details['score']
-            
+            found_categories.append(category)
             detected_tactics.append({
                 "tactic": details['label'],
-                "description": f"Triggered by words like: '{', '.join(found_words[:3])}'",
+                "description": f"Detected concepts similar to '{matches[0]}'",
                 "icon": "bi-shield-exclamation"
             })
 
-    blob = TextBlob(text)
+    # --- PHASE 3: SEMANTIC PHRASE MATCHING (The "Whole Meaning" Check) ---
+    # Using token_set_ratio handles word reordering ("I need bank details" == "Bank details I need")
+    for phrase in KNOWN_SCAM_PHRASES:
+        ratio = fuzz.token_set_ratio(phrase, text)
+        if ratio > 80: # High similarity to known scam structure
+            score += 30
+            detected_tactics.append({
+                "tactic": "Scam Script Match",
+                "description": f"The sentence structure matches known scam scripts (Similarity: {ratio}%).",
+                "icon": "bi-file-earmark-text-fill"
+            })
+            break # Only flag once per text to avoid clutter
+
+    # --- PHASE 4: CONTEXTUAL LOGIC (The "Combination" Check) ---
+    # This catches the "Meaning" of the paragraph by combining distinct signals.
     
-    if blob.sentiment.polarity < -0.3 and score > 0:
-        score += 10
+    # Scenario A: Asking for Sensitive Data + Providing a Link (Phishing)
+    if "sensitive_data" in found_categories and ("link" in found_categories or "call_to_action" in found_categories):
+        score += 40
         detected_tactics.append({
-            "tactic": "Negative Emotional Manipulation",
-            "description": "Uses negative language to create fear or panic.",
-            "icon": "bi-emoji-frown-fill"
+            "tactic": "Phishing Pattern Detected",
+            "description": "CRITICAL: The text asks for sensitive info via a link. This is a definitive phishing pattern.",
+            "icon": "bi-radioactive"
         })
-        
+
+    # Scenario B: Financial Demand + Urgency (Social Engineering)
+    if "financial_demand" in found_categories and "urgency" in found_categories:
+        score += 30
+        detected_tactics.append({
+            "tactic": "Coercion Pattern Detected",
+            "description": "Combines financial demands with artificial urgency to force a mistake.",
+            "icon": "bi-stopwatch-fill"
+        })
+
+    # --- PHASE 5: SENTIMENT ANALYSIS ---
+    blob = TextBlob(text)
     if "kindly" in text and blob.sentiment.polarity > 0.1:
         score += 15
-        detected_tactics.append({
-            "tactic": "Calculated Politeness",
-            "description": "Uses overly formal/polite language ('kindly') to lower defenses.",
-            "icon": "bi-chat-heart-fill"
-        })
+        detected_tactics.append({"tactic": "Calculated Politeness", "description": "Uses 'kindly' to lower defenses.", "icon": "bi-chat-heart-fill"})
 
+    # --- PHASE 6: FINAL VERDICT ---
     final_score = min(score, 100)
-
     verdict = "Safe"
-    if final_score > 30: verdict = "Suspicious"
-    if final_score > 60: verdict = "High Risk"
-    if final_score > 85: verdict = "DANGEROUS"
-
-    advice = "No obvious threats found. Always verify the sender."
-    if final_score > 30: advice = "Be careful. Verify the source independently."
-    if final_score > 60: advice = "Do not click links. Do not call numbers. Block sender."
-    if final_score > 85: advice = "CRITICAL: This is a scam. Delete immediately."
+    advice = "No obvious threats found."
+    
+    if final_score > 30: 
+        verdict = "Suspicious"
+        advice = "Be careful. Verify the source independently."
+    if final_score > 70: 
+        verdict = "Malicious"
+        advice = "CRITICAL: High probability of a scam. Do not click or reply."
 
     return jsonify({
         "score": final_score,
