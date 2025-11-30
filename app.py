@@ -3,7 +3,6 @@ from flask_cors import CORS
 from textblob import TextBlob
 from thefuzz import fuzz
 import re
-import math
 
 app = Flask(__name__)
 CORS(app) 
@@ -49,25 +48,40 @@ KNOWN_SCAM_PHRASES = [
 
 def calculate_perplexity(text):
     """
-    A lightweight heuristic to estimate if text is AI-generated.
-    AI text tends to use very common words and lacks 'rare' vocabulary.
+    Advanced Heuristic for AI Detection.
+    Checks for 'Robot Voice' features: Low subjectivity, formal transitions, and perfect grammar.
     """
+    blob = TextBlob(text)
     words = text.split()
     if not words: return 0
     
-    # Measure average word length (AI tends to be verbose but standard)
-    avg_len = sum(len(w) for w in words) / len(words)
-    
-    # Measure 'uniqueness' (Human writing has higher unique word ratio)
-    unique_ratio = len(set(words)) / len(words)
-    
-    # Simple score: Lower uniqueness + Standard length = Likely AI
-    # This is a heuristic, not a full LLM check, to keep it fast/free.
     ai_score = 0
-    if unique_ratio < 0.5: ai_score += 40
-    if 4 < avg_len < 6: ai_score += 20 # AI often hits this average word length
+
+    # 1. Subjectivity Check (AI is often purely objective/factual)
+    # Humans usually have opinions (Subjectivity > 0.5). AI is often 0.0 - 0.3.
+    if blob.sentiment.subjectivity < 0.4:
+        ai_score += 30
+
+    # 2. The "Transition Word" Trap
+    # AI loves these words in short texts. Humans rarely use "Furthermore" in a DM.
+    robotic_transitions = ["furthermore", "moreover", "in conclusion", "additionally", "consequently", "hence", "thus", "therefore"]
+    found_transitions = [w for w in robotic_transitions if w in text.lower()]
     
-    return ai_score
+    if len(found_transitions) > 0:
+        ai_score += 40  # Huge red flag for AI
+
+    # 3. Sentence Structure Uniformity
+    # AI writes sentences of similar length. Humans vary wildly.
+    sentences = blob.sentences
+    if len(sentences) > 2:
+        lengths = [len(s.words) for s in sentences]
+        avg_len = sum(lengths) / len(lengths)
+        # Check if variance is low (all sentences are roughly average length)
+        variance = sum((l - avg_len) ** 2 for l in lengths) / len(lengths)
+        if variance < 10: # Low variance = Robotic rhythm
+            ai_score += 20
+
+    return min(ai_score, 100)
 
 @app.route('/')
 def home():
@@ -147,18 +161,16 @@ def analyze_intent():
     # --- PHASE 5: AI & SENTIMENT ANALYSIS ---
     blob = TextBlob(text)
     
-    # Sentiment check (Politeness Trap)
     if "kindly" in text and blob.sentiment.polarity > 0.1:
         score += 15
         detected_tactics.append({"tactic": "Calculated Politeness", "description": "Uses 'kindly' to lower defenses.", "icon": "bi-chat-heart-fill"})
 
-    # AI Detection Heuristic
-    ai_probability = calculate_perplexity(text)
+    # AI Detection Check
+    ai_probability = calculate_perplexity(request.json['text']) # Pass ORIGINAL text for structure analysis
     if ai_probability > 50:
-        # We don't add to risk score directly, but we flag it
         detected_tactics.append({
             "tactic": "AI-Generated Pattern",
-            "description": "Text structure suggests it might be machine-generated (Low Perplexity).",
+            "description": f"Writing style is highly formal/objective (Score: {ai_probability}%). Likely Bot/AI.",
             "icon": "bi-robot"
         })
 
@@ -179,7 +191,7 @@ def analyze_intent():
         "verdict": verdict,
         "tactics": detected_tactics,
         "advice": advice,
-        "ai_score": ai_probability # Returning this so frontend can show it if you want
+        "ai_score": ai_probability
     })
 
 if __name__ == '__main__':
