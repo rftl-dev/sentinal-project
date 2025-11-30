@@ -149,18 +149,3 @@ def analyze_intent():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=10000)
-```
-
-### Why this is "Bulletproof"
-
-1.  **Catches the "Microsoft Support" Scam:**
-    * Detects "Microsoft Support" (+25 points).
-    * Detects "Virus" (+30 points).
-    * Detects "Call us" (+15 points).
-    * **Total Score: 70/100 (High Risk).** ✅
-
-2.  **Catches Remote Access Scams:**
-    * If a scammer asks you to download "AnyDesk" or "TeamViewer," it immediately adds **50 points**. This is the most dangerous type of scam, and your tool now specifically hunts for it.
-
-3.  **Catches "Smishing" (SMS Phishing):**
-    * The Regex (`re`) engine now looks for URLs (`http`, `bit.ly`) and Phone Numbers inside the text. A text message saying "Your package is halted, click here" will now trigger **Urgency + Link + Package Keywords**.
